@@ -4,9 +4,9 @@ obj=$(patsubst %.c,%.o,$(src))
 ALL:server_poll
 
 server_poll:$(obj)
-	gcc $^ -o $@
+	gcc $^ -o $@ -g
 %.o:%.c
-	gcc -c $^ -o $@
+	gcc -c $^ -o $@ -g
 
 clean:
 	-rm -rf $(obj) server_poll
