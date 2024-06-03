@@ -12,25 +12,24 @@ server 思路：
     struct epoll_event
     {
      uint32_t events;	/* Epoll events */
-     epoll_data_t data;	/* User data variable */
+     epoll_data_t data;	/* data是一个union epoll_data，如下 */
     };
   
-其中的data是一个union epoll_data，如下：
-
   typedef union epoll_data
          {
-            void *ptr;
+            void *ptr; (ptr------>struct myevent_s)
             int fd;
             uint32_t u32;
             uint64_t u64;
          } epoll_data_t;
 
-*如果定一个上述结构体的变量，即 struct epoll_event epv; 
-一般只使用epv.events和epv.data.fd (在../epoll/server_epoll.c中就是这样)
+如果struct epoll_event epv; 
+一般只使用epv.events和epv.data.fd
 
-*epv.data.ptr相当于是留出了一个可自定义的"拓展接口",
-当epv.data.ptr额外关联了一些fd相关的数据,比如ptr指向一个包含fd信息的结构体(见"二、")，
-那么就可以epoll_ctl(*,*,fd,&epv)
+
+(ptr------>struct myevent_s)：
+  epv.data.ptr相当于是留出了一个可自定义的"拓展接口",
+比如ptr指向一个包含fd信息的结构体(见"二、")，
 
 
 二、
@@ -48,15 +47,31 @@ server 思路：
      long last_active;                               //记录每次加入global_efd指向的红黑树的时间值
    };
 
-维护逻辑：
-   当向 epoll 注册事件时，通过 epoll_event 结构的 data 成员关联一些自定义数据。
-用来在 epoll_wait 返回时能够方便地识别哪个文件描述符（fd）产生了事件，并包含了与该事件处理相关的其他信息。
-
-   定义了该结构体的【全局】结构体数组global_events[MAX_EVENTS+1]，其中MAX_EVENTS+1=1024+1
+   定义了struct myevent_s global_events[MAX_EVENTS+1]，其中MAX_EVENTS+1=1024+1
    global_events[i] 记录第i个文件描述符对应的一系列信息，(i=0,1,...,1024)
 global_events[0] ~ global_events[1023] : 这1024个去记录有连接的 cfd
                    global_events[1024] : 最后一个记录 lfd 
 
+
+维护逻辑：
+       由以上 一、二、可知：对于一个从epoll_wait()返回的文件描述符fd,其信息量相当丰富。 
+某次epoll_wait()的返回的一个结构体数组中的第i号元素，信息量如下：
+
+epoll_event struct_array[i]
+    ├── uint32_t events
+    └── union data
+        ├── int fd
+        ├── uint32_t u32
+        ├── uint64_t u64
+        └── void*ptr
+                  ├── char buf[BUFLEN]
+                  ├── int len
+                  ├── int status
+                  ├── long last_active
+                  ├── struct myevent_s :: events
+                  ├── struct myevent_s :: fd
+                  ├── void*arg
+                  └── void (*call_back)(int fd,int events,void* arg)
 
 ------------------------------------
 

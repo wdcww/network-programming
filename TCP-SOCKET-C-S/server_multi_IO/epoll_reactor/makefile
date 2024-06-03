@@ -4,9 +4,9 @@ obj=$(patsubst %.c,%.o,$(src))
 ALL:server
 
 server:$(obj)
-	gcc $^ -o $@
+	gcc $^ -o $@ -g
 %.o:%.c
-	gcc -c $^ -o $@
+	gcc -c $^ -o $@ -g
 
 clean:
 	-rm -rf $(obj) server
