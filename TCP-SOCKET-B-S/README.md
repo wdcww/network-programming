@@ -36,17 +36,18 @@ http_server运行在一个Linux主机上，对Browser端展示该主机上某个
 展示位于http_server运行的机器上的/home/dc/show里的资源
 
 *在开始之前，我提前准备了一下show目录及其中的内容：*
-*dc@hasee:~/show$ tree*
-*.*
-*├── 121*
-*│   ├── 0.png*
-*│   └── 1.mp3*
-*├── 1.jpg*
-*├── 1.txt*
-*└── 1.webm*
+```
+dc@hasee:~/show$ tree
+.
+├── 121
+│   ├── 0.png
+│   └── 1.mp3
+├── 1.jpg
+├── 1.txt
+└── 1.webm
 
-*1 directory, 5 files*
-
+1 directory, 5 files
+```
 ---
 
 #### 1启动服务端
