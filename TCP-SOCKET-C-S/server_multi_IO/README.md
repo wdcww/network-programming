@@ -249,3 +249,80 @@ int main() {
 
 ## 4 epoll reactor
 
+在./epoll_reactor/server.c中的实现的逻辑是一个基于 epoll 反应堆模式 的 “回声服务器”（收到什么数据就回复什么数据），
+
+其设计思路：epoll ET 模式 + 非阻塞 I/O + 自定义结构体维护上下文 + 回调函数驱动事件处理。
+
+
+### 4.1 核心逻辑梳理
+整个服务器的工作流程可分为 _初始化→事件循环→事件处理→资源回收_ 四步，形成一个完整的 “反应堆” 闭环：
+#### 4.1.1. 初始化阶段（main 函数前期）
+全局资源初始化：
+
+global_events 数组（大小 1025）初始化，所有元素状态设为 0（未监听）。
+
+创建 epoll 实例（global_efd = epoll_create(...)），作为事件监控的核心。
+
+监听 socket（lfd）初始化：
+通过 initlistensocket 函数创建 lfd，设置为 非阻塞，并开启端口复用（SO_REUSEADDR）。
+绑定端口（默认 9527）、监听连接（listen(lfd, 20)）。
+将 lfd 关联到 global_events[1024]（数组最后一位专门用于 lfd），绑定回调函数 acceptconn（处理新连接），并通过 eventadd 加入 epoll 监听 EPOLLIN 事件（等待新连接）。
+
+#### 4.1.2. 事件循环（main 函数核心）
+服务器进入无限循环，不断处理两类任务：超时连接清理 和 就绪事件处理：
+```
+while (1) {
+    // 1. 超时检查：每轮检查100个连接，超过60秒无活动则关闭
+    for (i=0; i<100; i++, checkpos++) {
+        if (global_events[checkpos].status == 1 && (now - last_active) >= 60) {
+            eventdel(global_efd, &global_events[checkpos]); // 从epoll移除
+            close(global_efd); // 关闭连接
+        }
+    }
+
+    // 2. 等待事件就绪（超时1000ms，避免永久阻塞）
+    int nfd = epoll_wait(global_efd, events, MAX_EVENTS+1, 1000);
+
+    // 3. 处理就绪事件
+    for (i=0; i<nfd; i++) {
+        struct myevent_s* ev = (struct myevent_s*)events[i].data.ptr;
+        if (ev->events & EPOLLIN) ev->call_back(...); // 读事件回调
+        if (ev->events & EPOLLOUT) ev->call_back(...); // 写事件回调
+    }
+}
+```
+
+#### 4.1.3. 事件处理（三大回调函数）
+回调函数是 “反应堆” 的 “反应” 核心，根据事件类型（新连接、读、写）自动触发：
+
+| 回调函数   | 触发场景               | 核心逻辑                                                                                                                                                                                                 |
+|------------|------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| acceptconn | lfd 触发 EPOLLIN       | 循环调用 accept 获取所有新连接（ET 模式要求），为每个 cfd 初始化 global_events 空闲位置，设置为非阻塞，绑定 recvdata 回调，加入 epoll 监听 `EPOLLIN | EPOLLET`。                                           |
+| recvdata   | cfd 触发 EPOLLIN       | 从 epoll 移除 cfd，调用 recv 读取客户端数据；若读取成功，切换回调为 senddata，加入 epoll 监听 `EPOLLOUT | EPOLLET`；若连接关闭/出错，关闭 cfd 并释放资源。                                                   |
+| senddata   | cfd 触发 EPOLLOUT      | 从 epoll 移除 cfd，调用 write 回复客户端数据；若发送成功，切换回调为 recvdata，加入 epoll 监听 `EPOLLIN | EPOLLET`；若暂时无法发送（EAGAIN），继续监听 EPOLLOUT；否则关闭 cfd。                               |
+
+#### 4.1.4. 资源管理（eventadd /eventdel）
+
+_eventadd_ ：封装 epoll_ctl 的 ADD/MOD 操作，根据 myevent_s.status 判断是新增（status=0）还是修改（status=1）事件，确保 epoll_event.data.ptr 指向 myevent_s 结构体（关联上下文）。
+
+_eventdel_ ：封装 epoll_ctl 的 DEL 操作，将 myevent_s.status 设为 0（标记未监听），从 epoll 红黑树中移除该 fd，避免无效事件通知。
+
+### 4.2 设计亮点
+
+1. 所有操作（新连接、读写）均由事件触发，无主动轮询，CPU 利用率极高，符合高并发服务器设计原则。
+
+2. ET 模式 + 非阻塞 I/O 结合：
+
+lfd 和所有 cfd 均设为非阻塞（fcntl(F_SETFL, O_NONBLOCK)），避免 I/O 操作阻塞事件循环。
+
+采用 ET 模式（EPOLLET），每个事件仅通知一次，减少 epoll 通知次数，提升性能。
+
+3. 上下文完整绑定：
+通过 epoll_event.data.ptr 关联 myevent_s 结构体，每个 fd 的缓冲区（buf）、状态（status）、回调函数等信息 “随身携带”，事件处理时无需额外查找，逻辑清晰。
+
+4. 超时自动清理：
+每轮循环检查 100 个连接的 last_active 时间，超过 60 秒无活动则自动关闭，避免僵尸连接占用资源。
+
+5. 资源复用：
+global_events 数组固定大小，通过 status 字段标记是否可用，避免动态内存分配的开销和泄漏风险。
+
