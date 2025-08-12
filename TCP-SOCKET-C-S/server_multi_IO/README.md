@@ -39,6 +39,28 @@ int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struc
 
 若timeout传入NULL，则会永远等下去；若传入所设置的tv_sec，tv_usec，则等待设置的固定时间；若传入0，则检查描述符后立即返回。
 
+```
+                                                                                lfd
+                                                                               / 
+                                           cfd=Accept()                      3  
+|  0   |                           | server |————————————> |     内核     | /__4__ | client1（cfd1）|
+|  1   |                                                   |   (select)   | \ 
+|  2   |                                                                     5
+|  3   | lfd                                                                   \
+|  4   | cfd1                                                                  | client2（cfd2）|
+|  5   | cfd2
+|  ... | ...
+| 1023 | ...                        readfds（读集合） :   |  4,5  |  监听“4”“5”是否有读事件 
+                                    writefds（写集合）：  |   3   |  监听“3”是否有写事件
+文件描述符表                        exceptfds(异常集合)： |   4,5  | → 监听“4”“5”是否有异常   
+```
+
+如上图所示，一个程序启动之后，左侧的文件描述符表中的“0”“1”“2”都被占用了，后续只能使用“3”~“1023” 。
+
+select()使用了“3”去做listen，第一个client1占用“4”，client2占用“5”，则此时调用select()函数时，nfds需要传入5+1=6。
+
+三个集合则是传入自己想监听的事件，图中右侧给了例子
+
 
 
 ## 2 poll
@@ -117,7 +139,113 @@ poll：
 
 ## 3 epoll
 
+核心优势是支持海量文件描述符（FD）高效监控，并通过 “事件驱动” 模式大幅降低系统开销。
 
+1 高效的事件通知：内核通过 “就绪链表” 直接返回发生事件的 FD，无需像 select/poll 那样遍历全部 FD，性能不受监控数量影响（适合 10 万 + 并发连接）。
+
+2 按需注册：只需通过 epoll_ctl 注册一次 FD，后续可重复使用，无需像 select 那样每次调用都重新初始化 FD 集合。
+
+3 支持边缘触发（ET）和水平触发（LT）：水平触发（LT，默认）：只要 FD 有未处理的事件，epoll_wait 就会持续通知（与 select/poll 行为一致，易用性高）。边缘触发（ET）：仅在 FD 状态从 “无事件” 变为 “有事件” 时通知一次（需一次性处理完所有数据，效率更高，但编程复杂）。
+
+4 无 FD 数量限制：仅受系统内存和进程可打开的最大 FD 数限制（可通过 ulimit 调整），远超 select 的 FD_SETSIZE（默认 1024）。
+
+### epoll 的核心操作与数据结构
+epoll 通过三个系统调用实现功能，依赖内核维护的两个关键数据结构：
+红黑树：存储所有注册的 FD 及其事件（eventpoll 结构体），支持高效的添加 / 删除 / 修改操作。
+
+就绪链表：存储发生了事件的 FD，用户态只需直接读取该链表即可获取事件，无需遍历全部 FD。
+
+### 3.1 epoll_create：创建 epoll 实例
+```
+#include <sys/epoll.h>
+int epoll_create(int size); // size 为历史参数，现代 Linux 已忽略，只需传 >0 的值
+```
+ _功能_：创建一个 epoll 实例（内核数据结构），返回一个 ** epoll 文件描述符（epfd）**，用于后续操作。
+
+### 3.2 epoll_ctl：注册 / 修改 / 删除监控事件
+```
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+```
+
+参数：
+
+1 _epfd_ ：epoll_create 返回的实例描述符。
+
+2 _op_ ：操作类型（EPOLL_CTL_ADD 注册、EPOLL_CTL_MOD 修改、EPOLL_CTL_DEL 删除）。
+
+3 _fd_ ：需要监控的文件描述符（如 socket）。
+
+4 _event_ ：struct epoll_event 结构体，指定关注的事件（如 EPOLLIN 可读）和用户数据（void *ptr）。
+```
+struct epoll_event {
+    uint32_t events;  // 关注的事件（EPOLLIN、EPOLLOUT、EPOLLERR 等）
+    epoll_data_t data; // 用户数据（通常存 FD 或自定义结构体指针）
+};
+typedef union epoll_data {
+    void    *ptr;
+    int      fd;
+    uint32_t u32;
+    uint64_t u64;
+} epoll_data_t;
+```
+
+### 3.3 epoll_wait：等待事件发生
+```
+int epoll_wait(int epfd, struct epoll_event* events, int maxevents, int timeout);
+```
+
+功能：等待注册的 FD 发生事件，将发生事件的 FD 及其信息填入 events 数组。
+
+参数：
+
+1 _epfd_ : 见上
+
+2 _events_ ：用户态数组，用于接收就绪事件。
+
+3 _maxevents_：events 数组的最大长度（每次最多处理的事件数）。
+
+4 _timeout_ ：超时时间（毫秒，-1 无限等待，0 立即返回）。
+
+5 _返回值_ ：发生事件的 FD 数量（>0）、超时（0）、出错（-1）。
+
+
+```
+示例：用 epoll 监控 socket 可读事件
+#include <sys/epoll.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main() {
+    int epfd = epoll_create(1); // 创建 epoll 实例
+    struct epoll_event ev, events[10];
+    int listen_fd = ...; // 假设已创建并绑定监听 socket
+
+    // 注册监听 socket 的可读事件（LT 模式）
+    ev.events = EPOLLIN;
+    ev.data.fd = listen_fd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev);
+
+    while (1) {
+        // 等待事件，最多返回 10 个事件，超时 500 毫秒
+        int nfds = epoll_wait(epfd, events, 10, 500);
+        if (nfds == -1) {
+            perror("epoll_wait failed");
+            break;
+        }
+
+        // 处理就绪事件
+        for (int i = 0; i < nfds; i++) {
+            if (events[i].data.fd == listen_fd && (events[i].events & EPOLLIN)) {
+                // 监听 socket 可读，处理新连接
+                printf("New connection incoming\n");
+            }
+        }
+    }
+
+    close(epfd);
+    return 0;
+}
+```
 
 ## 4 epoll reactor
 
