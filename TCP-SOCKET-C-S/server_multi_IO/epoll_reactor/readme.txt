@@ -53,10 +53,11 @@ global_events[0] ~ global_events[1023] : 这1024个去记录有连接的 cfd
                    global_events[1024] : 最后一个记录 lfd 
 
 
-维护逻辑：
-       由以上 一、二、可知：对于一个从epoll_wait()返回的文件描述符fd,其信息量相当丰富。 
-某次epoll_wait()的返回的一个结构体数组中的第i号元素，信息量如下：
 
+【【【【【维护逻辑】】】】】：
+       【由以上 一、二、可知：对于一个从epoll_wait()返回的文件描述符fd,其信息量相当丰富。】 
+【某次epoll_wait()的返回的一个结构体数组中的第i号元素，信息量如下：】
+------------------------------------
 epoll_event struct_array[i]
     ├── uint32_t events
     └── union data
@@ -75,11 +76,12 @@ epoll_event struct_array[i]
 
 ------------------------------------
 
-epoll是Linux中的一个高效I/O事件通知机制，它允许应用程序监视多个文件描述符，
-以查看这些文件描述符是否准备好进行读、写等操作，而无需使用传统的轮询方法。
+
+
+epoll是Linux中的一个高效I/O事件通知机制，它允许应用程序监视多个文件描述符，以查看这些文件描述符是否准备好进行读、写等操作，而无需使用传统的轮询方法。
 
    epoll 有两种触发模式：LT（Level Triggered）和 ET（Edge Triggered）。
-LT（Level Triggered）模式是默认模式，它类似于传统的 select/poll 机制。
+   LT（Level Triggered）模式是默认模式，它类似于传统的 select/poll 机制。
 当某个文件描述符可读或可写时，epoll 会一直通知应用程序，直到应用程序读取或写入该文件描述符。
 这可能导致一些不必要的唤醒和上下文切换，因为应用程序可能在第一次读取/写入后没有立即处理完所有数据，
 但 epoll 仍然会继续通知它。
